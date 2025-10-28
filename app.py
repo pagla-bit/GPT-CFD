@@ -105,7 +105,13 @@ if run:
         st.error("No data returned for that ticker/timeframe.")
     else:
         df = add_indicators(df)
-        latest = df.iloc[-1]
+
+if df.empty:
+    st.error("No valid data after indicator processing. Try a different ticker or timeframe.")
+    st.stop()
+
+latest = df.iloc[-1]
+
 
         # Load ML model if available
         model = None
