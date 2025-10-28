@@ -42,13 +42,28 @@ def add_indicators(df):
     df["ema21"] = ta.ema(df["Close"], length=21)
     df["sma50"] = ta.sma(df["Close"], length=50)
     df["rsi14"] = ta.rsi(df["Close"], length=14)
-    macd = ta.macd(df["Close"])
-    df["macd"] = macd["MACD_12_26_9"]
-    df["macd_sig"] = macd["MACDs_12_26_9"]
+
+    # Safe MACD computation
+    try:
+        macd_df = ta.macd(df["Close"])
+        if macd_df is not None and "MACD_12_26_9" in macd_df.columns:
+            df["macd"] = macd_df["MACD_12_26_9"]
+            df["macd_sig"] = macd_df["MACDs_12_26_9"]
+        else:
+            df["macd"] = 0.0
+            df["macd_sig"] = 0.0
+    except Exception:
+        df["macd"] = 0.0
+        df["macd_sig"] = 0.0
+
+    # Other indicators
     df["atr14"] = ta.atr(df["High"], df["Low"], df["Close"], length=14)
     df["vol_ma20"] = ta.sma(df["Volume"], length=20)
+
+    # Drop incomplete rows
     df.dropna(inplace=True)
     return df
+
 
 # --- Simple rule-based score (used as fallback) ---
 def rule_score(latest):
