@@ -1,0 +1,1 @@
+<placeholder: full simulator.py content from scaffold>
