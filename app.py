@@ -114,12 +114,14 @@ latest = df.iloc[-1]
 
 
         # Load ML model if available
-        model = None
-        if os.path.exists(MODEL_PATH):
-            try:
-                model = joblib.load(MODEL_PATH)
-            except Exception:
-                model = None
+        # Load ML model if available
+            model = None
+            if os.path.exists(MODEL_PATH):
+                try:
+                    model = joblib.load(MODEL_PATH)
+                except Exception:
+                    model = None
+
 
         features = [
             latest['ema9'] - latest['ema21'],
