@@ -141,19 +141,21 @@ elif score <= -thr:
     sl = entry + (0.10 * margin) / (margin * leverage) * entry
 
 
-        rec = {
-            'timestamp': datetime.utcnow().isoformat(),
-            'ticker': ticker,
-            'timeframe': timeframe,
-            'direction': direction,
-            'score': float(score),
-            'entry': float(entry),
-            'tp': float(tp) if tp is not None else None,
-            'sl': float(sl) if sl is not None else None
-        }
+# --- Build signal record and save ---
+rec = {
+    'timestamp': datetime.utcnow().isoformat(),
+    'ticker': ticker,
+    'timeframe': timeframe,
+    'direction': direction,
+    'score': float(score),
+    'entry': float(entry),
+    'tp': float(tp) if tp is not None else None,
+    'sl': float(sl) if sl is not None else None
+}
 
-        if direction != 'NEUTRAL':
-            save_signal(rec)
+if direction != 'NEUTRAL':
+    save_signal(rec)
+)
 
         with col1:
             st.subheader(f"Latest {ticker} — {latest.name}")
