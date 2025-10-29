@@ -12,6 +12,7 @@ from simulator import PaperTrader
 
 SIGNALS_FILE = "signals.json"
 MODEL_PATH = "models/xgb_model.joblib"
+MIN_DATA_POINTS = 60  # Minimum data points needed for reliable indicators
 
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 
@@ -50,12 +51,23 @@ def add_indicators(df):
         return df
     
     df = df.copy()
+    data_length = len(df)
     
-    # Calculate EMAs and SMAs
-    df["ema9"] = ta.ema(df["Close"], length=9)
-    df["ema21"] = ta.ema(df["Close"], length=21)
-    df["sma50"] = ta.sma(df["Close"], length=50)
-    df["rsi14"] = ta.rsi(df["Close"], length=14)
+    # Calculate EMAs and SMAs with adaptive lengths based on available data
+    df["ema9"] = ta.ema(df["Close"], length=min(9, data_length // 3))
+    df["ema21"] = ta.ema(df["Close"], length=min(21, data_length // 2))
+    
+    # Only calculate SMA50 if we have enough data, otherwise use shorter SMA
+    if data_length >= 50:
+        df["sma50"] = ta.sma(df["Close"], length=50)
+    else:
+        # Use adaptive SMA length (at least 10, at most half the data)
+        sma_length = max(10, min(30, data_length // 2))
+        df["sma50"] = ta.sma(df["Close"], length=sma_length)
+    
+    # RSI calculation
+    rsi_length = min(14, max(5, data_length // 4))
+    df["rsi14"] = ta.rsi(df["Close"], length=rsi_length)
 
     # Safe MACD computation
     try:
@@ -70,9 +82,12 @@ def add_indicators(df):
         df["macd"] = 0.0
         df["macd_sig"] = 0.0
 
-    # Other indicators
-    df["atr14"] = ta.atr(df["High"], df["Low"], df["Close"], length=14)
-    df["vol_ma20"] = ta.sma(df["Volume"], length=20)
+    # Other indicators with adaptive lengths
+    atr_length = min(14, max(5, data_length // 4))
+    df["atr14"] = ta.atr(df["High"], df["Low"], df["Close"], length=atr_length)
+    
+    vol_ma_length = min(20, max(5, data_length // 3))
+    df["vol_ma20"] = ta.sma(df["Volume"], length=vol_ma_length)
 
     # Drop incomplete rows
     df.dropna(inplace=True)
@@ -124,13 +139,22 @@ st.title("Trading Signal Dashboard")
 
 with st.sidebar:
     st.header("Inputs")
-    ticker = st.text_input("Ticker (yfinance)", value="GC=F")
-    timeframe = st.selectbox("Interval", options=["1m", "5m", "15m", "1h", "1d"], index=1)
-    period_map = {"1m": "2d", "5m": "7d", "15m": "30d", "1h": "90d", "1d": "5y"}
-    period = period_map.get(timeframe, "7d")
+    ticker = st.text_input("Ticker (yfinance)", value="AAPL", help="Examples: AAPL, MSFT, BTC-USD, ETH-USD, ^GSPC")
+    timeframe = st.selectbox("Interval", options=["1m", "5m", "15m", "1h", "1d"], index=4)
+    # Updated period mapping to ensure enough data points for indicators
+    period_map = {
+        "1m": "5d",    # ~2000 points
+        "5m": "30d",   # ~2000 points
+        "15m": "60d",  # ~2000 points
+        "1h": "180d",  # ~1000 points
+        "1d": "2y"     # ~500 points
+    }
+    period = period_map.get(timeframe, "30d")
+    
+    st.caption(f"Fetching {period} of data")
     margin = st.number_input("Margin (capital)", value=1000.0, min_value=1.0)
     leverage = st.number_input("Leverage", value=10.0, min_value=1.0)
-    run = st.button("Fetch & Analyze")
+    run = st.button("Fetch & Analyze", type="primary")
 
 col1, col2 = st.columns([3, 1])
 
@@ -139,14 +163,27 @@ if run:
         df = fetch_data(ticker, period, timeframe)
         
         if df.empty:
-            st.error("No data returned for that ticker/timeframe.")
+            st.error(f"❌ No data returned for ticker '{ticker}' with timeframe '{timeframe}'.")
+            st.info("💡 Try these solutions:\n- Check if the ticker symbol is correct\n- Try a different timeframe (e.g., '1d' usually works best)\n- Some tickers may not support intraday data\n- Common tickers: AAPL, MSFT, TSMC, BTC-USD, ETH-USD")
             st.stop()
         
+        # Check if we have minimum required data points
+        if len(df) < MIN_DATA_POINTS:
+            st.warning(f"⚠️ Only {len(df)} data points available. Need at least {MIN_DATA_POINTS} for reliable indicators.")
+            st.info("💡 Proceeding with adaptive indicators, but consider using:\n- A longer period\n- A longer timeframe (e.g., '1d' instead of '1m')")
+        else:
+            st.success(f"✅ Fetched {len(df)} data points")
+        
+        initial_length = len(df)
         df = add_indicators(df)
         
         if df.empty:
-            st.error("No valid data after indicator processing. Try a different ticker or timeframe.")
+            st.error(f"❌ No valid data after indicator processing.")
+            st.warning(f"Initial data points: {initial_length} - Need at least 50 points for all indicators.")
+            st.info("💡 Solutions:\n- Use a longer period (e.g., '30d', '90d', or '1y')\n- Use a longer timeframe interval (e.g., '1h' or '1d')\n- The combination of period and interval determines total data points")
             st.stop()
+        
+        st.info(f"📊 {len(df)} data points after indicator calculation")
         
         latest = df.iloc[-1]
         
