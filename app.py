@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import yfinance as yf
 import pandas as pd
@@ -17,27 +16,42 @@ MODEL_PATH = "models/xgb_model.joblib"
 st.set_page_config(page_title="Trading Dashboard", layout="wide")
 
 # --- Utilities: load/save signals (keep last 100) ---
+@st.cache_data(ttl=60)
 def load_signals():
+    """Load signals with caching to avoid repeated file reads"""
     if not os.path.exists(SIGNALS_FILE):
         return []
     with open(SIGNALS_FILE, "r") as f:
         return json.load(f)
 
 def save_signal(rec):
+    """Save signal and maintain only the last 100 records"""
     sigs = load_signals()
     sigs.insert(0, rec)
     sigs = sigs[:100]
     with open(SIGNALS_FILE, "w") as f:
         json.dump(sigs, f, indent=2, default=str)
+    # Clear cache after saving new signal
+    load_signals.clear()
 
 # --- Indicator & feature engineering ---
+@st.cache_data(ttl=300)
 def fetch_data(ticker, period, interval):
+    """Fetch data with caching to reduce API calls"""
     df = yf.download(tickers=ticker, period=period, interval=interval, progress=False, auto_adjust=False)
+    if df.empty:
+        return df
     df.dropna(inplace=True)
     return df
 
 def add_indicators(df):
+    """Add technical indicators to dataframe"""
+    if df.empty:
+        return df
+    
     df = df.copy()
+    
+    # Calculate EMAs and SMAs
     df["ema9"] = ta.ema(df["Close"], length=9)
     df["ema21"] = ta.ema(df["Close"], length=21)
     df["sma50"] = ta.sma(df["Close"], length=50)
@@ -64,25 +78,46 @@ def add_indicators(df):
     df.dropna(inplace=True)
     return df
 
-
 # --- Simple rule-based score (used as fallback) ---
 def rule_score(latest):
+    """Calculate rule-based trading score"""
     score = 0.0
+    
+    # EMA trend
     if latest['ema9'] > latest['ema21']:
         score += 1.5
     else:
         score -= 1.5
+    
+    # RSI momentum
     if latest['rsi14'] < 30:
         score += 1.0
     elif latest['rsi14'] > 70:
         score -= 1.0
+    
+    # MACD signal
     if latest['macd'] > latest['macd_sig']:
         score += 0.8
     else:
         score -= 0.8
+    
+    # Volume confirmation
     if latest['Volume'] > latest['vol_ma20'] * 1.5:
         score += 0.6
+    
     return score
+
+# --- Load ML model once at startup ---
+@st.cache_resource
+def load_model():
+    """Load ML model with caching to avoid repeated disk reads"""
+    if os.path.exists(MODEL_PATH):
+        try:
+            return joblib.load(MODEL_PATH)
+        except Exception as e:
+            st.warning(f"Could not load model: {e}")
+            return None
+    return None
 
 # --- Main UI ---
 st.title("Trading Signal Dashboard")
@@ -100,78 +135,125 @@ with st.sidebar:
 col1, col2 = st.columns([3, 1])
 
 if run:
-    df = fetch_data(ticker, period, timeframe)
-    if df.empty:
-        st.error("No data returned for that ticker/timeframe.")
-    else:
+    with st.spinner("Fetching data..."):
+        df = fetch_data(ticker, period, timeframe)
+        
+        if df.empty:
+            st.error("No data returned for that ticker/timeframe.")
+            st.stop()
+        
         df = add_indicators(df)
-
-if df.empty:
-    st.error("No valid data after indicator processing. Try a different ticker or timeframe.")
-    st.stop()
-
-latest = df.iloc[-1]
-
-
+        
+        if df.empty:
+            st.error("No valid data after indicator processing. Try a different ticker or timeframe.")
+            st.stop()
+        
+        latest = df.iloc[-1]
+        
         # Load ML model if available
-        # Load ML model if available
-# Load ML model if available
-model = None
-if os.path.exists(MODEL_PATH):
-    try:
-        model = joblib.load(MODEL_PATH)
-    except Exception:
-        model = None
-
-# --- Rule-based fallback ---
-score = rule_score(latest)
-thr = 1.2
-direction = "NEUTRAL"
-entry = latest['Close']
-required_move = 0.05 / max(1.0, leverage)
-tp = None
-sl = None
-if score >= thr:
-    direction = 'BUY'
-    tp = entry * (1 + required_move)
-    sl = entry - (0.10 * margin) / (margin * leverage) * entry  # 10% capital loss stop-loss
-elif score <= -thr:
-    direction = 'SELL'
-    tp = entry * (1 - required_move)
-    sl = entry + (0.10 * margin) / (margin * leverage) * entry
-
-
-# --- Build signal record and save ---
-rec = {
-    'timestamp': datetime.utcnow().isoformat(),
-    'ticker': ticker,
-    'timeframe': timeframe,
-    'direction': direction,
-    'score': float(score),
-    'entry': float(entry),
-    'tp': float(tp) if tp is not None else None,
-    'sl': float(sl) if sl is not None else None
-}
-
-if direction != 'NEUTRAL':
-    save_signal(rec)
-)
-
+        model = load_model()
+        ml_pred = None
+        
+        if model is not None:
+            try:
+                # Prepare features for ML model
+                features = ['ema9', 'ema21', 'sma50', 'rsi14', 'macd', 'macd_sig', 'atr14', 'vol_ma20']
+                X = latest[features].values.reshape(1, -1)
+                ml_pred = model.predict_proba(X)[0]
+            except Exception as e:
+                st.warning(f"ML prediction failed: {e}")
+                ml_pred = None
+        
+        # --- Rule-based fallback ---
+        score = rule_score(latest)
+        thr = 1.2
+        direction = "NEUTRAL"
+        entry = latest['Close']
+        required_move = 0.05 / max(1.0, leverage)
+        tp = None
+        sl = None
+        
+        if score >= thr:
+            direction = 'BUY'
+            tp = entry * (1 + required_move)
+            sl = entry - (0.10 * margin) / (margin * leverage) * entry  # 10% capital loss stop-loss
+        elif score <= -thr:
+            direction = 'SELL'
+            tp = entry * (1 - required_move)
+            sl = entry + (0.10 * margin) / (margin * leverage) * entry
+        
+        # --- Build signal record and save ---
+        rec = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'ticker': ticker,
+            'timeframe': timeframe,
+            'direction': direction,
+            'score': float(score),
+            'entry': float(entry),
+            'tp': float(tp) if tp is not None else None,
+            'sl': float(sl) if sl is not None else None
+        }
+        
+        if direction != 'NEUTRAL':
+            save_signal(rec)
+        
+        # --- Display results ---
         with col1:
             st.subheader(f"Latest {ticker} — {latest.name}")
-            st.write("Direction:", direction)
-            st.write("Score:", round(score, 3))
+            
+            # Use columns for better layout
+            metric_col1, metric_col2, metric_col3 = st.columns(3)
+            with metric_col1:
+                st.metric("Direction", direction)
+            with metric_col2:
+                st.metric("Score", round(score, 3))
+            with metric_col3:
+                st.metric("Entry Price", f"{entry:.6f}")
+            
             if ml_pred is not None:
-                st.write("ML probabilities:", ml_pred.tolist())
-            if tp is not None:
-                st.write(f"Entry: {entry:.6f}  TP: {tp:.6f}  SL: {sl:.6f}")
-
+                st.write("**ML probabilities:**", [round(p, 4) for p in ml_pred.tolist()])
+            
+            if tp is not None and sl is not None:
+                st.write(f"**Take Profit:** {tp:.6f}")
+                st.write(f"**Stop Loss:** {sl:.6f}")
+                st.write(f"**Risk/Reward:** {abs((tp - entry) / (entry - sl)):.2f}")
+        
         with col2:
-            st.subheader("Last signals")
-            st.write(load_signals())
+            st.subheader("Recent Signals")
+            signals = load_signals()
+            if signals:
+                # Display only the most recent 5 signals for cleaner UI
+                for sig in signals[:5]:
+                    st.markdown(f"**{sig['direction']}** {sig['ticker']} @ {sig['entry']:.4f}")
+                    st.caption(f"{sig['timestamp'][:19]}")
+                    st.divider()
+            else:
+                st.info("No signals yet")
+        
+        # --- Price chart ---
+        st.header("Price Chart with Indicators")
+        chart_data = pd.DataFrame({
+            'Close': df['Close'],
+            'EMA9': df['ema9'],
+            'EMA21': df['ema21'],
+            'SMA50': df['sma50']
+        })
+        st.line_chart(chart_data)
+        
+        # --- Additional metrics ---
+        st.header("Technical Indicators")
+        ind_col1, ind_col2, ind_col3, ind_col4 = st.columns(4)
+        with ind_col1:
+            st.metric("RSI", f"{latest['rsi14']:.2f}")
+        with ind_col2:
+            st.metric("MACD", f"{latest['macd']:.4f}")
+        with ind_col3:
+            st.metric("ATR", f"{latest['atr14']:.4f}")
+        with ind_col4:
+            st.metric("Volume Ratio", f"{latest['Volume'] / latest['vol_ma20']:.2f}x")
 
-        st.header("Price chart")
-        st.line_chart(df["Close"])
+else:
+    st.info("👈 Configure settings and click 'Fetch & Analyze' to generate signals")
 
 st.markdown("---")
-st.info("This app generates signals only. Backtest and paper trading modules are included in the repo.")
+st.info("💡 This app generates trading signals. Backtest and paper trading modules are included in the repo.")
