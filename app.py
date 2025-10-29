@@ -115,44 +115,31 @@ latest = df.iloc[-1]
 
         # Load ML model if available
         # Load ML model if available
-            model = None
-            if os.path.exists(MODEL_PATH):
-                try:
-                    model = joblib.load(MODEL_PATH)
-                except Exception:
-                    model = None
+# Load ML model if available
+model = None
+if os.path.exists(MODEL_PATH):
+    try:
+        model = joblib.load(MODEL_PATH)
+    except Exception:
+        model = None
 
+# --- Rule-based fallback ---
+score = rule_score(latest)
+thr = 1.2
+direction = "NEUTRAL"
+entry = latest['Close']
+required_move = 0.05 / max(1.0, leverage)
+tp = None
+sl = None
+if score >= thr:
+    direction = 'BUY'
+    tp = entry * (1 + required_move)
+    sl = entry - (0.10 * margin) / (margin * leverage) * entry  # 10% capital loss stop-loss
+elif score <= -thr:
+    direction = 'SELL'
+    tp = entry * (1 - required_move)
+    sl = entry + (0.10 * margin) / (margin * leverage) * entry
 
-        features = [
-            latest['ema9'] - latest['ema21'],
-            latest['rsi14'],
-            latest['macd'] - latest['macd_sig'],
-            latest['atr14'],
-            latest['Volume'] / max(1, latest['vol_ma20'])
-        ]
-
-        # ML prediction
-        ml_pred = None
-        if model is not None:
-            X = np.array(features).reshape(1, -1)
-            ml_pred = model.predict_proba(X)[0]
-
-        # Rule-based fallback
-        score = rule_score(latest)
-        thr = 1.2
-        direction = "NEUTRAL"
-        entry = latest['Close']
-        required_move = 0.05 / max(1.0, leverage)
-        tp = None
-        sl = None
-        if score >= thr:
-            direction = 'BUY'
-            tp = entry * (1 + required_move)
-            sl = entry - (0.10 * margin) / (margin * leverage) * entry  # 10% capital loss stop-loss
-        elif score <= -thr:
-            direction = 'SELL'
-            tp = entry * (1 - required_move)
-            sl = entry + (0.10 * margin) / (margin * leverage) * entry
 
         rec = {
             'timestamp': datetime.utcnow().isoformat(),
